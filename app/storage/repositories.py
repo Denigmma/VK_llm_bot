@@ -1,3 +1,5 @@
+import json
+
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
@@ -111,8 +113,23 @@ def clear_chat_messages(db: Session, chat_id: int) -> None:
     db.commit()
 
 
-def save_message(db: Session, chat_id: int, role: str, content: str) -> Message:
-    message = Message(chat_id=chat_id, role=role, content=content)
+def save_message(
+    db: Session,
+    chat_id: int,
+    role: str,
+    content: str,
+    *,
+    image_url: str | None = None,
+    attachments: list[dict] | None = None,
+) -> Message:
+    attachments_json = json.dumps(attachments, ensure_ascii=False) if attachments else None
+    message = Message(
+        chat_id=chat_id,
+        role=role,
+        content=content,
+        image_url=image_url,
+        attachments_json=attachments_json,
+    )
     db.add(message)
     db.commit()
     db.refresh(message)

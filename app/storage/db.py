@@ -66,3 +66,24 @@ def _ensure_schema_updates() -> None:
                     "ADD COLUMN setup_stage VARCHAR(32) NOT NULL DEFAULT 'ready'"
                 )
             )
+
+    if "messages" not in inspector.get_table_names():
+        return
+
+    message_columns = {column["name"] for column in inspector.get_columns("messages")}
+    if "image_url" not in message_columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "ALTER TABLE messages "
+                    "ADD COLUMN image_url TEXT NULL"
+                )
+            )
+    if "attachments_json" not in message_columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "ALTER TABLE messages "
+                    "ADD COLUMN attachments_json TEXT NULL"
+                )
+            )
