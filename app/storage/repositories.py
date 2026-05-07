@@ -31,6 +31,16 @@ def count_user_chats(db: Session, vk_user_id: int) -> int:
     return db.scalar(select(func.count(Chat.id)).where(Chat.vk_user_id == vk_user_id)) or 0
 
 
+def count_chat_messages(db: Session, chat_id: int) -> int:
+    return db.scalar(select(func.count(Message.id)).where(Message.chat_id == chat_id)) or 0
+
+
+def count_chat_turns(db: Session, chat_id: int) -> int:
+    return db.scalar(
+        select(func.count(Message.id)).where(Message.chat_id == chat_id, Message.role == "user")
+    ) or 0
+
+
 def create_new_chat(
     db: Session,
     vk_user_id: int,
@@ -151,8 +161,96 @@ def get_last_messages(db: Session, chat_id: int, limit: int) -> list[Message]:
     return list(reversed(messages))
 
 
+def get_last_context_messages(db: Session, chat_id: int, turn_limit: int) -> list[Message]:
+    if turn_limit <= 0:
+        return []
+
+    messages = _get_chat_messages_asc(db, chat_id)
+    turns = _group_messages_by_turn(messages)
+    selected_turns = turns[-turn_limit:]
+    return [message for turn in selected_turns for message in turn]
+
+
+def get_first_messages(db: Session, chat_id: int, limit: int) -> list[Message]:
+    if limit <= 0:
+        return []
+
+    return list(
+        db.scalars(
+            select(Message)
+            .where(Message.chat_id == chat_id)
+            .order_by(Message.created_at.asc(), Message.id.asc())
+            .limit(limit)
+        )
+    )
+
+
+def get_last_message(db: Session, chat_id: int) -> Message | None:
+    return db.scalar(
+        select(Message)
+        .where(Message.chat_id == chat_id)
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .limit(1)
+    )
+
+
+def delete_messages_by_ids(db: Session, message_ids: list[int]) -> int:
+    if not message_ids:
+        return 0
+
+    result = db.execute(delete(Message).where(Message.id.in_(message_ids)))
+    db.commit()
+    return result.rowcount or 0
+
+
+def delete_messages_from_head(db: Session, chat_id: int, limit: int) -> int:
+    messages = list(
+        db.scalars(
+            select(Message)
+            .where(Message.chat_id == chat_id)
+            .order_by(Message.created_at.desc(), Message.id.desc())
+            .limit(limit)
+        )
+    )
+    return delete_messages_by_ids(db, [message.id for message in messages])
+
+
+def delete_messages_from_tail(db: Session, chat_id: int, limit: int) -> int:
+    messages = get_first_messages(db, chat_id, limit)
+    return delete_messages_by_ids(db, [message.id for message in messages])
+
+
+def delete_turns_from_head(db: Session, chat_id: int, limit: int) -> int:
+    if limit <= 0:
+        return 0
+
+    turns = _group_messages_by_turn(_get_chat_messages_asc(db, chat_id))
+    selected_turns = turns[-limit:]
+    message_ids = [message.id for turn in selected_turns for message in turn]
+    delete_messages_by_ids(db, message_ids)
+    return len(selected_turns)
+
+
+def delete_turns_from_tail(db: Session, chat_id: int, limit: int) -> int:
+    if limit <= 0:
+        return 0
+
+    turns = _group_messages_by_turn(_get_chat_messages_asc(db, chat_id))
+    selected_turns = turns[:limit]
+    message_ids = [message.id for turn in selected_turns for message in turn]
+    delete_messages_by_ids(db, message_ids)
+    return len(selected_turns)
+
+
 def update_chat_model(db: Session, chat: Chat, model: str) -> Chat:
     chat.model = model
+    db.commit()
+    db.refresh(chat)
+    return chat
+
+
+def update_chat_context_limit(db: Session, chat: Chat, max_context_messages: int) -> Chat:
+    chat.max_context_messages = max_context_messages
     db.commit()
     db.refresh(chat)
     return chat
@@ -224,3 +322,35 @@ def delete_chat(db: Session, chat: Chat) -> Chat | None:
     db.commit()
     db.refresh(next_chat)
     return next_chat
+
+
+def _get_chat_messages_asc(db: Session, chat_id: int) -> list[Message]:
+    return list(
+        db.scalars(
+            select(Message)
+            .where(Message.chat_id == chat_id)
+            .order_by(Message.created_at.asc(), Message.id.asc())
+        )
+    )
+
+
+def _group_messages_by_turn(messages: list[Message]) -> list[list[Message]]:
+    turns: list[list[Message]] = []
+    current_turn: list[Message] = []
+
+    for message in messages:
+        if message.role == "user":
+            if current_turn:
+                turns.append(current_turn)
+            current_turn = [message]
+            continue
+
+        if not current_turn:
+            current_turn = [message]
+        else:
+            current_turn.append(message)
+
+    if current_turn:
+        turns.append(current_turn)
+
+    return turns

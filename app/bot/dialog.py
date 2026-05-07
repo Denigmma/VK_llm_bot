@@ -48,72 +48,112 @@ def handle_user_message(
                 return process_setup_input(db, vk_user_id, text)
 
             chat = ensure_active_chat(db, vk_user_id)
-            repositories.save_message(
+            return generate_chat_reply(
                 db,
-                chat.id,
-                "user",
+                chat,
                 text,
-                image_url=image_urls[0] if image_urls else None,
+                image_urls=image_urls,
                 attachments=attachments,
+                vk_user_id=vk_user_id,
             )
-            recent_messages = repositories.get_last_messages(db, chat.id, chat.max_context_messages)
-            openrouter_messages = _build_openrouter_messages(chat, recent_messages)
-            settings = get_settings()
-
-            request_model = chat.model
-            response_prefix = ""
-            if has_images:
-                request_model, response_prefix = _resolve_model_for_images(chat.model, chat.api_profile)
-                logger.info(
-                    "Processing multimodal request: user=%s chat_id=%s base_model=%s request_model=%s images=%s text_len=%s",
-                    vk_user_id,
-                    chat.id,
-                    chat.model,
-                    request_model,
-                    len(image_urls),
-                    len(text),
-                )
-            else:
-                logger.info(
-                    "Processing text request: user=%s chat_id=%s model=%s text_len=%s",
-                    vk_user_id,
-                    chat.id,
-                    request_model,
-                    len(text),
-                )
-
-            try:
-                api_key = settings.get_openrouter_api_key(chat.api_profile)
-                assistant_text = OpenRouterClient().chat_completion(
-                    api_key=api_key,
-                    model=request_model,
-                    messages=openrouter_messages,
-                    temperature=chat.temperature,
-                    reasoning_enabled=chat.reasoning_enabled,
-                    reasoning_effort=chat.reasoning_effort,
-                )
-            except ValueError as exc:
-                logger.warning("OpenRouter profile config is incomplete: %s", exc)
-                return str(exc)
-            except OpenRouterError as exc:
-                logger.warning(
-                    "OpenRouter request failed: user=%s chat_id=%s model=%s images=%s error=%s",
-                    vk_user_id,
-                    chat.id,
-                    request_model,
-                    len(image_urls),
-                    exc,
-                )
-                return _format_openrouter_error(exc, reasoning_enabled=chat.reasoning_enabled, has_images=has_images)
-
-            if response_prefix:
-                assistant_text = response_prefix + assistant_text
-
-            repositories.save_message(db, chat.id, "assistant", assistant_text)
-            return assistant_text
     except Exception:
         logger.exception("Unexpected bot error")
         return INTERNAL_ERROR_TEXT
+
+
+def generate_chat_reply(
+    db,
+    chat: Chat,
+    text: str,
+    *,
+    image_urls: list[str] | None = None,
+    attachments: list[dict] | None = None,
+    vk_user_id: int | None = None,
+) -> str:
+    image_urls = image_urls or []
+    attachments = attachments or []
+    has_images = bool(image_urls)
+
+    repositories.save_message(
+        db,
+        chat.id,
+        "user",
+        text,
+        image_url=image_urls[0] if image_urls else None,
+        attachments=attachments,
+    )
+    recent_messages = repositories.get_last_context_messages(db, chat.id, chat.max_context_messages)
+    openrouter_messages = _build_openrouter_messages(chat, recent_messages)
+    settings = get_settings()
+
+    request_model = chat.model
+    response_prefix = ""
+    if has_images:
+        request_model, response_prefix = _resolve_model_for_images(chat.model, chat.api_profile)
+        logger.info(
+            "Processing multimodal request: user=%s chat_id=%s base_model=%s request_model=%s images=%s text_len=%s",
+            vk_user_id,
+            chat.id,
+            chat.model,
+            request_model,
+            len(image_urls),
+            len(text),
+        )
+    else:
+        logger.info(
+            "Processing text request: user=%s chat_id=%s model=%s text_len=%s",
+            vk_user_id,
+            chat.id,
+            request_model,
+            len(text),
+        )
+
+    try:
+        api_key = settings.get_openrouter_api_key(chat.api_profile)
+        assistant_text = OpenRouterClient().chat_completion(
+            api_key=api_key,
+            model=request_model,
+            messages=openrouter_messages,
+            temperature=chat.temperature,
+            reasoning_enabled=chat.reasoning_enabled,
+            reasoning_effort=chat.reasoning_effort,
+        )
+    except ValueError as exc:
+        logger.warning("OpenRouter profile config is incomplete: %s", exc)
+        return str(exc)
+    except OpenRouterError as exc:
+        logger.warning(
+            "OpenRouter request failed: user=%s chat_id=%s model=%s images=%s error=%s",
+            vk_user_id,
+            chat.id,
+            request_model,
+            len(image_urls),
+            exc,
+        )
+        return _format_openrouter_error(exc, reasoning_enabled=chat.reasoning_enabled, has_images=has_images)
+
+    if response_prefix:
+        assistant_text = response_prefix + assistant_text
+
+    repositories.save_message(db, chat.id, "assistant", assistant_text)
+    return assistant_text
+
+
+def extract_message_payload(message: Message) -> tuple[str, list[str], list[dict]]:
+    attachments = _load_raw_attachments(message)
+    image_urls: list[str] = []
+    for attachment in attachments:
+        if not isinstance(attachment, dict):
+            continue
+        image_url = attachment.get("image_url")
+        if isinstance(image_url, str) and image_url:
+            image_urls.append(image_url)
+
+    if not image_urls and message.image_url:
+        image_urls = [message.image_url]
+        attachments = [{"type": "photo", "image_url": message.image_url}]
+
+    return message.content, image_urls, attachments
 
 
 def _build_openrouter_messages(chat: Chat, messages: list[Message]) -> list[dict]:
@@ -144,31 +184,34 @@ def _build_message_content(message: Message) -> str | list[dict]:
 
 
 def _load_attachment_parts(message: Message) -> list[dict]:
+    parts: list[dict] = []
+    for attachment in _load_raw_attachments(message):
+        if not isinstance(attachment, dict):
+            continue
+        if attachment.get("type") != "photo":
+            continue
+        image_url = attachment.get("image_url")
+        if isinstance(image_url, str) and image_url:
+            parts.append(_build_image_part(image_url))
+
+    if not parts and message.image_url:
+        parts.append(_build_image_part(message.image_url))
+    return parts
+
+
+def _load_raw_attachments(message: Message) -> list[dict]:
     if not message.attachments_json:
-        if message.image_url:
-            return [_build_image_part(message.image_url)]
         return []
 
     try:
         attachments = json.loads(message.attachments_json)
     except json.JSONDecodeError:
         logger.warning("Failed to decode attachments_json for message %s", message.id)
-        return [_build_image_part(message.image_url)] if message.image_url else []
+        return []
 
-    parts: list[dict] = []
     if isinstance(attachments, list):
-        for attachment in attachments:
-            if not isinstance(attachment, dict):
-                continue
-            if attachment.get("type") != "photo":
-                continue
-            image_url = attachment.get("image_url")
-            if isinstance(image_url, str) and image_url:
-                parts.append(_build_image_part(image_url))
-
-    if not parts and message.image_url:
-        parts.append(_build_image_part(message.image_url))
-    return parts
+        return attachments
+    return []
 
 
 def _build_image_part(image_url: str) -> dict:

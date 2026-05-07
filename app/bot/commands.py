@@ -4,7 +4,7 @@ from app.bot.models_catalog import format_models_catalog, get_model_by_number
 from app.bot.prompts import DEFAULT_SYSTEM_PROMPT
 from app.config import OpenRouterProfile, get_settings
 from app.storage import repositories
-from app.storage.models import Chat
+from app.storage.models import Chat, Message
 
 
 SETUP_STAGE_READY = "ready"
@@ -12,6 +12,7 @@ SETUP_STAGE_TITLE = "awaiting_title"
 SETUP_STAGE_MODEL = "awaiting_model"
 SETUP_STAGE_REASONING = "awaiting_reasoning"
 SETUP_STAGE_REASONING_EFFORT = "awaiting_reasoning_effort"
+MAX_CONTEXT_LIMIT = 200
 
 
 HELP_TEXT = """✨ Команды бота
@@ -32,6 +33,10 @@ HELP_TEXT = """✨ Команды бота
 /key — показать текущий профиль OpenRouter.
 /key free — переключиться на free ключ и free модель.
 /key pay — переключиться на pay ключ и pay модель.
+/context — показать, сколько пользовательских сообщений сейчас попадает в контекст.
+/context 30 — установить длину контекста для текущего чата.
+/context trim head 3 — удалить 3 последних пользовательских запроса вместе с ответами.
+/context trim tail 3 — удалить 3 самых ранних пользовательских запроса вместе с ответами.
 /system — показать системный промпт.
 /system текст — установить новый системный промпт.
 
@@ -40,6 +45,8 @@ HELP_TEXT = """✨ Команды бота
 /reasoning off — отключить reasoning.
 /reasoning on — включить reasoning с текущим effort или medium.
 /reasoning low|medium|high — включить reasoning с выбранным effort.
+/regen — перегенерировать последний ответ на тот же промпт.
+/regen новый текст — отредактировать последний промпт и получить новый ответ.
 /skip — пропустить текущий шаг настройки нового чата.
 /help — показать эту справку."""
 
@@ -77,6 +84,12 @@ def handle_command(db: Session, vk_user_id: int, text: str) -> str:
         return _handle_key(db, vk_user_id, argument)
     if command == "/reasoning":
         return _handle_reasoning(db, vk_user_id, argument)
+    if command == "/context":
+        return _handle_context(db, vk_user_id, argument)
+    if command == "/trim":
+        return _handle_context_trim(db, vk_user_id, argument)
+    if command == "/regen":
+        return _handle_regen(db, vk_user_id, argument)
     if command == "/system":
         return _handle_system(db, vk_user_id, argument)
 
@@ -199,6 +212,8 @@ def _handle_delete_chat(db: Session, vk_user_id: int, argument: str) -> str:
 
 def _handle_settings(db: Session, vk_user_id: int) -> str:
     chat = ensure_active_chat(db, vk_user_id)
+    context_total = repositories.count_chat_turns(db, chat.id)
+    context_used = min(context_total, chat.max_context_messages)
     return (
         "⚙️ Настройки текущего чата:\n"
         f"Название: {chat.title}\n"
@@ -207,7 +222,7 @@ def _handle_settings(db: Session, vk_user_id: int) -> str:
         f"Reasoning: {str(chat.reasoning_enabled).lower()}\n"
         f"Уровень reasoning: {chat.reasoning_effort}\n"
         f"Temperature: {chat.temperature}\n"
-        f"Контекстных сообщений: {chat.max_context_messages}\n"
+        f"Контекст: {context_used}/{chat.max_context_messages} пользовательских сообщений\n"
         f"System prompt: {chat.system_prompt}"
     )
 
@@ -260,6 +275,127 @@ def _handle_reasoning(db: Session, vk_user_id: int, argument: str) -> str:
         return f"🧠 Reasoning включен. Уровень: {normalized}"
 
     return "Используйте /reasoning off, /reasoning on или /reasoning low|medium|high."
+
+
+def _handle_context(db: Session, vk_user_id: int, argument: str) -> str:
+    chat = ensure_active_chat(db, vk_user_id)
+    if not argument:
+        total_turns = repositories.count_chat_turns(db, chat.id)
+        used_turns = min(total_turns, chat.max_context_messages)
+        return (
+            "🧠 Контекст текущего чата:\n"
+            f"Сейчас в модель попадает: {used_turns}/{chat.max_context_messages}\n"
+            f"Пользовательских сообщений в истории: {total_turns}"
+        )
+
+    if argument.lower().startswith("trim "):
+        return _handle_context_trim(db, vk_user_id, argument[5:].strip())
+
+    try:
+        new_limit = int(argument)
+    except ValueError:
+        return (
+            "Используйте /context, /context 30 или /context trim head 3.\n"
+            "`head` удаляет последние запросы, `tail` — самые ранние."
+        )
+
+    if not 1 <= new_limit <= MAX_CONTEXT_LIMIT:
+        return f"Введите число от 1 до {MAX_CONTEXT_LIMIT}."
+
+    repositories.update_chat_context_limit(db, chat, new_limit)
+    total_turns = repositories.count_chat_turns(db, chat.id)
+    used_turns = min(total_turns, chat.max_context_messages)
+    return (
+        f"⚙️ Длина контекста обновлена: {chat.max_context_messages}\n"
+        f"🧠 Сейчас используется: {used_turns}/{chat.max_context_messages} пользовательских сообщений"
+    )
+
+
+def _handle_context_trim(db: Session, vk_user_id: int, argument: str) -> str:
+    chat = ensure_active_chat(db, vk_user_id)
+    parts = argument.split()
+    if len(parts) != 2:
+        return "Используйте /context trim head 3 или /context trim tail 3."
+
+    side = parts[0].lower()
+    try:
+        amount = int(parts[1])
+    except ValueError:
+        return "Количество сообщений должно быть числом. Например: /context trim head 3"
+
+    if amount <= 0:
+        return "Количество сообщений должно быть больше нуля."
+
+    if side == "head":
+        deleted = repositories.delete_turns_from_head(db, chat.id, amount)
+        side_label = "последних"
+    elif side == "tail":
+        deleted = repositories.delete_turns_from_tail(db, chat.id, amount)
+        side_label = "самых ранних"
+    else:
+        return "Используйте `head` для последних сообщений или `tail` для самых ранних."
+
+    total_turns = repositories.count_chat_turns(db, chat.id)
+    used_turns = min(total_turns, chat.max_context_messages)
+    return (
+        f"🧹 Удалено {deleted} {side_label} пользовательских сообщений вместе с ответами.\n"
+        f"🧠 Теперь в контексте: {used_turns}/{chat.max_context_messages}"
+    )
+
+
+def _handle_regen(db: Session, vk_user_id: int, argument: str) -> str:
+    chat = ensure_active_chat(db, vk_user_id)
+    latest_messages = repositories.get_last_messages(db, chat.id, 2)
+    user_message, assistant_message = _resolve_regen_target(latest_messages)
+    if user_message is None:
+        return "Не удалось найти последний пользовательский промпт для регенерации."
+
+    edited_prompt = argument.strip() or user_message.content
+    original_prompt = user_message.content or "<без текста>"
+
+    delete_ids = [user_message.id]
+    if assistant_message is not None:
+        delete_ids.append(assistant_message.id)
+    repositories.delete_messages_by_ids(db, delete_ids)
+
+    from app.bot import dialog as dialog_module
+
+    _, image_urls, attachments = dialog_module.extract_message_payload(user_message)
+    assistant_text = dialog_module.generate_chat_reply(
+        db,
+        chat,
+        edited_prompt,
+        image_urls=image_urls,
+        attachments=attachments,
+        vk_user_id=vk_user_id,
+    )
+
+    if argument.strip():
+        header = (
+            "🔄 Последний промпт отредактирован и отправлен заново.\n"
+            f"Было: {original_prompt}\n"
+            f"Стало: {edited_prompt}\n\n"
+        )
+    else:
+        header = "🔄 Последний ответ перегенерирован.\n\n"
+
+    return header + assistant_text
+
+
+def _resolve_regen_target(messages: list[Message]) -> tuple[Message | None, Message | None]:
+    if not messages:
+        return None, None
+
+    last_message = messages[-1]
+    if last_message.role == "user":
+        return last_message, None
+
+    if last_message.role == "assistant":
+        if len(messages) >= 2 and messages[-2].role == "user":
+            return messages[-2], last_message
+        return None, last_message
+
+    return None, None
 
 
 def _handle_key(db: Session, vk_user_id: int, argument: str) -> str:
@@ -445,6 +581,7 @@ def _format_setup_summary(chat: Chat) -> str:
         f"💬 Название: {chat.title}\n"
         f"⚙️ Модель: {chat.model}\n"
         f"🔑 Профиль: {chat.api_profile}\n"
-        f"🧠 Reasoning: {str(chat.reasoning_enabled).lower()} / {chat.reasoning_effort}\n\n"
+        f"🧠 Reasoning: {str(chat.reasoning_enabled).lower()} / {chat.reasoning_effort}\n"
+        f"🗂️ Контекст: {chat.max_context_messages} пользовательских сообщений\n\n"
         "Теперь можно просто писать сообщение."
     )
