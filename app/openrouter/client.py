@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import Any
 import json
 
@@ -9,6 +10,12 @@ from app.utils.logger import get_logger
 
 
 logger = get_logger(__name__)
+
+
+@dataclass(slots=True)
+class ChatCompletionResult:
+    content: str
+    annotations: list[dict[str, Any]] | None = None
 
 
 class OpenRouterClient:
@@ -24,7 +31,8 @@ class OpenRouterClient:
         temperature: float,
         reasoning_enabled: bool,
         reasoning_effort: str,
-    ) -> str:
+        pdf_parser_engine: str | None = None,
+    ) -> ChatCompletionResult:
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -36,18 +44,31 @@ class OpenRouterClient:
                 "exclude": True,
             }
 
+        file_parts = _count_file_parts(messages)
+        if file_parts and pdf_parser_engine:
+            payload["plugins"] = [
+                {
+                    "id": "file-parser",
+                    "pdf": {
+                        "engine": pdf_parser_engine,
+                    },
+                }
+            ]
+
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
 
         logger.info(
-            "OpenRouter request: model=%s messages=%s image_parts=%s reasoning=%s effort=%s",
+            "OpenRouter request: model=%s messages=%s image_parts=%s file_parts=%s reasoning=%s effort=%s pdf_engine=%s",
             model,
             len(messages),
             _count_image_parts(messages),
+            file_parts,
             reasoning_enabled,
             reasoning_effort,
+            pdf_parser_engine or "n/a",
         )
 
         try:
@@ -84,7 +105,7 @@ class OpenRouterClient:
             )
             raise OpenRouterError(_extract_error_text_from_data(data))
 
-        return _extract_assistant_content(data, model=model)
+        return _extract_assistant_result(data, model=model)
 
 
 def _count_image_parts(messages: list[dict[str, Any]]) -> int:
@@ -94,6 +115,16 @@ def _count_image_parts(messages: list[dict[str, Any]]) -> int:
         if not isinstance(content, list):
             continue
         total += sum(1 for part in content if isinstance(part, dict) and part.get("type") == "image_url")
+    return total
+
+
+def _count_file_parts(messages: list[dict[str, Any]]) -> int:
+    total = 0
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        total += sum(1 for part in content if isinstance(part, dict) and part.get("type") == "file")
     return total
 
 
@@ -141,7 +172,7 @@ def _looks_like_error_payload(data: Any) -> bool:
     return False
 
 
-def _extract_assistant_content(data: Any, *, model: str) -> str:
+def _extract_assistant_result(data: Any, *, model: str) -> ChatCompletionResult:
     if not isinstance(data, dict):
         raise OpenRouterError("OpenRouter вернул ответ не в формате JSON-объекта")
 
@@ -153,15 +184,21 @@ def _extract_assistant_content(data: Any, *, model: str) -> str:
             sorted(data.keys()),
             _json_snippet(data),
         )
-        raise OpenRouterError("OpenRouter вернул неожиданный ответ без choices. Проверьте поддержку изображений у выбранной модели.")
+        raise OpenRouterError(
+            "OpenRouter вернул неожиданный ответ без choices. Проверьте поддержку изображений, PDF или выбранный parser engine."
+        )
 
     first_choice = choices[0]
     if not isinstance(first_choice, dict):
         raise OpenRouterError("choices[0] в ответе OpenRouter имеет неожиданный формат")
 
     message = first_choice.get("message")
+    annotations = None
     if isinstance(message, dict):
         content = message.get("content")
+        raw_annotations = message.get("annotations")
+        if isinstance(raw_annotations, list):
+            annotations = [item for item in raw_annotations if isinstance(item, dict)] or None
     else:
         content = first_choice.get("text")
 
@@ -177,7 +214,7 @@ def _extract_assistant_content(data: Any, *, model: str) -> str:
     if not content.strip():
         raise OpenRouterError("OpenRouter вернул пустой ответ ассистента")
 
-    return content.strip()
+    return ChatCompletionResult(content=content.strip(), annotations=annotations)
 
 
 def _normalize_content(content: Any) -> str | None:

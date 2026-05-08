@@ -48,6 +48,7 @@ class Chat(Base):
     reasoning_effort: Mapped[str] = mapped_column(String(16), default="medium", nullable=False)
     temperature: Mapped[float] = mapped_column(Float, default=0.7, nullable=False)
     max_context_messages: Mapped[int] = mapped_column(Integer, default=20, nullable=False)
+    pdf_parser_engine: Mapped[str] = mapped_column(String(32), default="cloudflare-ai", nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
@@ -78,6 +79,7 @@ class Message(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     attachments_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    annotations_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
     chat: Mapped[Chat] = relationship(back_populates="messages")

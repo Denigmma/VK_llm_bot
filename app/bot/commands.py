@@ -2,7 +2,7 @@ from sqlalchemy.orm import Session
 
 from app.bot.models_catalog import format_models_catalog, get_model_by_number
 from app.bot.prompts import DEFAULT_SYSTEM_PROMPT
-from app.config import OpenRouterProfile, get_settings
+from app.config import OpenRouterProfile, PdfParserEngine, get_settings
 from app.storage import repositories
 from app.storage.models import Chat, Message
 
@@ -13,6 +13,7 @@ SETUP_STAGE_MODEL = "awaiting_model"
 SETUP_STAGE_REASONING = "awaiting_reasoning"
 SETUP_STAGE_REASONING_EFFORT = "awaiting_reasoning_effort"
 MAX_CONTEXT_LIMIT = 200
+PDF_PARSER_ENGINES: tuple[PdfParserEngine, ...] = ("cloudflare-ai", "native", "mistral-ocr")
 
 
 HELP_TEXT = """✨ Команды бота
@@ -33,6 +34,10 @@ HELP_TEXT = """✨ Команды бота
 /key — показать текущий профиль OpenRouter.
 /key free — переключиться на free ключ и free модель.
 /key pay — переключиться на pay ключ и pay модель.
+/pdfengine — показать текущий движок парсинга PDF.
+/pdfengine cloudflare-ai — выбрать бесплатный движок парсинга PDF.
+/pdfengine native — парсить PDF нативно через модель.
+/pdfengine mistral-ocr — выбрать OCR-движок для PDF.
 /context — показать, сколько пользовательских сообщений сейчас попадает в контекст.
 /context 30 — установить длину контекста для текущего чата.
 /context trim head 3 — удалить 3 последних пользовательских запроса вместе с ответами.
@@ -84,6 +89,8 @@ def handle_command(db: Session, vk_user_id: int, text: str) -> str:
         return _handle_key(db, vk_user_id, argument)
     if command == "/reasoning":
         return _handle_reasoning(db, vk_user_id, argument)
+    if command in {"/pdfengine", "/pdfparser", "/pdf"}:
+        return _handle_pdf_engine(db, vk_user_id, argument)
     if command == "/context":
         return _handle_context(db, vk_user_id, argument)
     if command == "/trim":
@@ -119,6 +126,7 @@ def create_chat_with_defaults(db: Session, vk_user_id: int) -> Chat:
         reasoning_effort=settings.default_reasoning_effort,
         temperature=settings.default_temperature,
         max_context_messages=settings.default_max_context_messages,
+        pdf_parser_engine=settings.default_pdf_parser_engine,
         is_active=True,
     )
 
@@ -139,6 +147,7 @@ def create_chat_for_setup(db: Session, vk_user_id: int) -> Chat:
         reasoning_effort=settings.default_reasoning_effort,
         temperature=settings.default_temperature,
         max_context_messages=settings.default_max_context_messages,
+        pdf_parser_engine=settings.default_pdf_parser_engine,
         is_active=True,
     )
 
@@ -222,6 +231,7 @@ def _handle_settings(db: Session, vk_user_id: int) -> str:
         f"Reasoning: {str(chat.reasoning_enabled).lower()}\n"
         f"Уровень reasoning: {chat.reasoning_effort}\n"
         f"Temperature: {chat.temperature}\n"
+        f"PDF parser engine: {chat.pdf_parser_engine}\n"
         f"Контекст: {context_used}/{chat.max_context_messages} пользовательских сообщений\n"
         f"System prompt: {chat.system_prompt}"
     )
@@ -275,6 +285,27 @@ def _handle_reasoning(db: Session, vk_user_id: int, argument: str) -> str:
         return f"🧠 Reasoning включен. Уровень: {normalized}"
 
     return "Используйте /reasoning off, /reasoning on или /reasoning low|medium|high."
+
+
+def _handle_pdf_engine(db: Session, vk_user_id: int, argument: str) -> str:
+    chat = ensure_active_chat(db, vk_user_id)
+    normalized = argument.lower().strip()
+
+    if not normalized:
+        return (
+            "📄 Текущий движок парсинга PDF:\n"
+            f"Engine: {chat.pdf_parser_engine}\n\n"
+            "Доступно: cloudflare-ai, native, mistral-ocr"
+        )
+
+    if normalized not in PDF_PARSER_ENGINES:
+        return "Используйте /pdfengine cloudflare-ai, /pdfengine native или /pdfengine mistral-ocr."
+
+    repositories.update_chat_pdf_parser_engine(db, chat, normalized)
+    return (
+        "📄 Движок парсинга PDF обновлен.\n"
+        f"Текущее значение: {chat.pdf_parser_engine}"
+    )
 
 
 def _handle_context(db: Session, vk_user_id: int, argument: str) -> str:
@@ -582,6 +613,7 @@ def _format_setup_summary(chat: Chat) -> str:
         f"⚙️ Модель: {chat.model}\n"
         f"🔑 Профиль: {chat.api_profile}\n"
         f"🧠 Reasoning: {str(chat.reasoning_enabled).lower()} / {chat.reasoning_effort}\n"
+        f"📄 PDF parser engine: {chat.pdf_parser_engine}\n"
         f"🗂️ Контекст: {chat.max_context_messages} пользовательских сообщений\n\n"
         "Теперь можно просто писать сообщение."
     )

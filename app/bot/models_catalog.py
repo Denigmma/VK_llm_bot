@@ -4,12 +4,15 @@ from app.config import OpenRouterProfile
 PRESET_MODELS: list[str] = [
     "openai/gpt-5.4",
     "openai/gpt-5-nano",
+    "google/gemini-2.5-flash-lite",
+    "deepseek/deepseek-v3.2",
+    "deepseek/deepseek-v4-pro",
+    "google/gemini-2.5-pro",
+    "openai/o3",
     "nvidia/nemotron-3-super-120b-a12b:free",
-    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
-    "deepseek/deepseek-chat-v3-0324:free",
-    "qwen/qwen3-235b-a22b:free",
-    "google/gemini-2.0-flash-exp:free",
-    "meta-llama/llama-3.3-70b-instruct:free",
+    "tencent/hy3-preview:free",
+    "openai/gpt-oss-120b:free",
+    "google/gemma-4-31b-it:free"
 ]
 
 

@@ -54,6 +54,7 @@ def create_new_chat(
     reasoning_effort: str,
     temperature: float,
     max_context_messages: int,
+    pdf_parser_engine: str,
     is_active: bool = True,
 ) -> Chat:
     if is_active:
@@ -74,6 +75,7 @@ def create_new_chat(
         reasoning_effort=reasoning_effort,
         temperature=temperature,
         max_context_messages=max_context_messages,
+        pdf_parser_engine=pdf_parser_engine,
         is_active=is_active,
     )
     db.add(chat)
@@ -131,14 +133,17 @@ def save_message(
     *,
     image_url: str | None = None,
     attachments: list[dict] | None = None,
+    annotations: list[dict] | None = None,
 ) -> Message:
     attachments_json = json.dumps(attachments, ensure_ascii=False) if attachments else None
+    annotations_json = json.dumps(annotations, ensure_ascii=False) if annotations else None
     message = Message(
         chat_id=chat_id,
         role=role,
         content=content,
         image_url=image_url,
         attachments_json=attachments_json,
+        annotations_json=annotations_json,
     )
     db.add(message)
     db.commit()
@@ -300,6 +305,13 @@ def update_chat_title(db: Session, chat: Chat, title: str, *, setup_stage: str |
 
 def update_chat_setup_stage(db: Session, chat: Chat, setup_stage: str) -> Chat:
     chat.setup_stage = setup_stage
+    db.commit()
+    db.refresh(chat)
+    return chat
+
+
+def update_chat_pdf_parser_engine(db: Session, chat: Chat, pdf_parser_engine: str) -> Chat:
+    chat.pdf_parser_engine = pdf_parser_engine
     db.commit()
     db.refresh(chat)
     return chat

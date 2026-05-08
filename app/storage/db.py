@@ -66,6 +66,14 @@ def _ensure_schema_updates() -> None:
                     "ADD COLUMN setup_stage VARCHAR(32) NOT NULL DEFAULT 'ready'"
                 )
             )
+    if "pdf_parser_engine" not in chat_columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "ALTER TABLE chats "
+                    "ADD COLUMN pdf_parser_engine VARCHAR(32) NOT NULL DEFAULT 'cloudflare-ai'"
+                )
+            )
 
     if "messages" not in inspector.get_table_names():
         return
@@ -85,5 +93,13 @@ def _ensure_schema_updates() -> None:
                 text(
                     "ALTER TABLE messages "
                     "ADD COLUMN attachments_json TEXT NULL"
+                )
+            )
+    if "annotations_json" not in message_columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "ALTER TABLE messages "
+                    "ADD COLUMN annotations_json TEXT NULL"
                 )
             )

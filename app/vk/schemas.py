@@ -17,9 +17,18 @@ class VkPhoto(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
 
+class VkDoc(BaseModel):
+    title: str | None = None
+    ext: str | None = None
+    url: str | None = None
+
+    model_config = ConfigDict(extra="ignore")
+
+
 class VkAttachment(BaseModel):
     type: str | None = None
     photo: VkPhoto | None = None
+    doc: VkDoc | None = None
 
     model_config = ConfigDict(extra="ignore")
 

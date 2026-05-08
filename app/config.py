@@ -7,6 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ReasoningEffort = Literal["low", "medium", "high"]
 OpenRouterProfile = Literal["free", "pay"]
+PdfParserEngine = Literal["cloudflare-ai", "mistral-ocr", "native"]
 
 
 class Settings(BaseSettings):
@@ -41,6 +42,10 @@ class Settings(BaseSettings):
     default_reasoning_effort: ReasoningEffort = Field(default="medium", alias="DEFAULT_REASONING_EFFORT")
     default_max_context_messages: int = Field(default=20, alias="DEFAULT_MAX_CONTEXT_MESSAGES")
     default_temperature: float = Field(default=0.7, alias="DEFAULT_TEMPERATURE")
+    default_pdf_parser_engine: PdfParserEngine = Field(
+        default="cloudflare-ai",
+        alias="DEFAULT_PDF_PARSER_ENGINE",
+    )
 
     app_host: str = Field(default="0.0.0.0", alias="APP_HOST")
     app_port: int = Field(default=8000, alias="APP_PORT")
